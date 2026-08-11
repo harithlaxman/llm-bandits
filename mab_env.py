@@ -36,6 +36,8 @@ class MABEnv(ABC):
                 reward = self.get_reward(trial, timestep, arm)
                 agent.update(trial, timestep, arm, reward)
 
+        agent.summary()
+
     def run_experiment_batched(self, agent):
         # batch - 1 timestep x num_trials
         agent.reset()
@@ -44,6 +46,8 @@ class MABEnv(ABC):
             arms = agent.select_arm_batched(timestep)
             rewards = self.get_rewards_batched(timestep, arms)
             agent.update_batched(timestep, arms, rewards)
+
+        agent.summary()
 
 
 class MABStationaryEnv(MABEnv):

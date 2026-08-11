@@ -64,6 +64,44 @@ class BanditAgent:
 
         return np.stack(cumulative_regrets)
 
+    def optimal_arm_choices(self):
+        """1.0 where the chosen arm was optimal, shape (num_trials, horizon)."""
+        optimal_arm_choices = []
+
+        for trial in range(self.env.num_trials):
+            timesteps = np.array([
+                entry["timestep"] for entry in self.history[trial]
+            ], dtype=int)
+            chosen_arms = np.array([
+                entry["chosen_arm"] for entry in self.history[trial]
+            ], dtype=int)
+            chosen_arm_means = self.env.arm_means[trial, timesteps, chosen_arms]
+            optimal_arm_means = np.max(
+                self.env.arm_means[trial, timesteps, :], axis=1
+            )
+            # compare means, not indices, so tied optimal arms both count
+            optimal_arm_choices.append(
+                (chosen_arm_means == optimal_arm_means).astype(float)
+            )
+
+        return np.stack(optimal_arm_choices)
+
+    def summary(self):
+        """Print end-of-run stats, each a mean +/- std over trials."""
+        # nansum, so a run that died partway still summarises
+        rewards = np.nansum(self.rewards, axis=1)
+        print(f"cumulative reward = {rewards.mean():.2f} +/- {rewards.std():.2f}")
+
+        # regret and the optimal-arm rate need arm means, which contextual envs lack
+        if not hasattr(self.env, "arm_means"):
+            return
+
+        regrets = self.cumulative_regrets()[:, -1]
+        # second half only: a whole-run rate is dragged down by early exploration
+        suffix = self.optimal_arm_choices()[:, self.env.horizon // 2:].mean(axis=1) * 100
+        print(f"cumulative regret = {regrets.mean():.2f} +/- {regrets.std():.2f}")
+        print(f"optimal arm (2nd half) = {suffix.mean():.1f}% +/- {suffix.std():.1f}%")
+
     def plot_regret(self):
         mean_cumulative_regret = np.mean(self.cumulative_regrets(), axis=0)
         # per-timestep regret averages the same curve over elapsed steps, so it
@@ -78,6 +116,25 @@ class BanditAgent:
         per_timestep_ax.plot(mean_cumulative_regret / steps)
         per_timestep_ax.set_xlabel("Timestep")
         per_timestep_ax.set_ylabel("Mean per-timestep regret")
+
+        fig.tight_layout()
+        plt.show()
+
+    def plot_ctr(self):
+        steps = np.arange(1, self.env.horizon + 1)
+        curves = {"Reward": self.rewards}
+        # the optimal-arm rate needs arm means, which contextual envs lack
+        if hasattr(self.env, "arm_means"):
+            curves["Optimal arm"] = self.optimal_arm_choices()
+
+        fig, running_ax = plt.subplots(figsize=(5, 4))
+        for label, picks in curves.items():
+            running_ax.plot(np.mean(np.cumsum(picks, axis=1) / steps, axis=0), label=label)
+
+        running_ax.set_xlabel("Timestep")
+        running_ax.set_ylabel("Mean running CTR")
+        running_ax.set_ylim(0, 1)
+        running_ax.legend()
 
         fig.tight_layout()
         plt.show()

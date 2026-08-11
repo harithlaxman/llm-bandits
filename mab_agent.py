@@ -78,6 +78,15 @@ class LLMMABAgent(BanditAgent):
         super().update(trial, timestep, arm, reward)
         self.history[trial][-1]["raw_response"] = self.last_responses[trial]
 
+    def summary(self):
+        super().summary()
+        failures = self.parse_failures
+        share = failures.mean() / self.env.horizon * 100
+        print(
+            f"parse failures = {failures.mean():.2f} +/- {failures.std():.2f} "
+            f"per trial ({share:.1f}% of pulls, {failures.sum()} total)"
+        )
+
     # shared core
     def _build_prompt(self, trial, timestep):
         # one chat conversation from one trial's per-arm stats; the system
@@ -99,7 +108,7 @@ class LLMMABAgent(BanditAgent):
                     summary += f"{self.unit} {arm + 1} has not been pressed yet\n"
                     continue
                 summary += (
-                    f"{self.unit} {arm + 1} was pressed {count:.0f} times "
+                    f"{self.unit} {arm + 1} was pressed {count} times "
                     f"with average reward {self.arm_rewards[trial, arm] / count:.2f}\n"
                 )
 
