@@ -1,5 +1,9 @@
+import re
+
 import numpy as np
 import matplotlib.pyplot as plt
+
+CHOICE_PATTERN = re.compile(r"\[choice:\s*(\d+)\s*\]")
 
 
 class BanditAgent:
@@ -138,3 +142,76 @@ class BanditAgent:
 
         fig.tight_layout()
         plt.show()
+
+
+class LLMAgent(BanditAgent):
+    """vLLM plumbing shared by the MAB and contextual LLM agents.
+
+    Adds the model and the parsing to the usual bookkeeping; subclasses supply the
+    prompt. A contextual subclass lists `CBAgent` after this one, which puts it
+    between here and `BanditAgent`, so the contextual `update` still runs.
+    """
+
+    def __init__(self, env, model, seed=0, max_model_len=None):
+        # imported here, not at module level: a run without an LLM agent should
+        # not pay for the vLLM and CUDA import
+        from vllm import LLM, SamplingParams
+
+        super().__init__(env)
+
+        self.seed = seed
+        self.rng = np.random.default_rng(seed)
+        self.model = LLM(
+            model,
+            enable_prefix_caching=True,
+            trust_remote_code=True,
+            max_model_len=max_model_len,
+        )
+
+        self.sampling_params = SamplingParams(
+            temperature=1.0,
+            top_p=1.0,
+            top_k=50,
+            max_tokens=64,
+        )
+
+        # generation is unconstrained, so a response can miss the tag
+        self.parse_failures = np.zeros(env.num_trials, dtype=int)
+        self.last_responses = [None] * env.num_trials
+
+    def reset(self):
+        super().reset()
+        self.rng = np.random.default_rng(self.seed)
+        self.parse_failures.fill(0)
+        self.last_responses = [None] * self.env.num_trials
+
+    def _parse_arm(self, trial, output):
+        if not output.outputs:
+            # no completion at all - a preempted/aborted request, not a bad parse
+            raise RuntimeError("vLLM returned no completions")
+
+        text = output.outputs[0].text
+        self.last_responses[trial] = text
+
+        # last match wins: a model that restates itself ends on its final answer
+        matches = CHOICE_PATTERN.findall(text.lower())
+        if matches:
+            arm = int(matches[-1]) - 1
+            if 0 <= arm < self.env.num_arms:
+                return arm
+
+        self.parse_failures[trial] += 1
+        return int(self.rng.integers(self.env.num_arms))
+
+    def _record_response(self, trial):
+        # the update signatures differ between MAB and CB, so each agent calls this
+        self.history[trial][-1]["raw_response"] = self.last_responses[trial]
+
+    def summary(self):
+        super().summary()
+        failures = self.parse_failures
+        share = failures.mean() / self.env.horizon * 100
+        print(
+            f"parse failures = {failures.mean():.2f} +/- {failures.std():.2f} "
+            f"per trial ({share:.1f}% of pulls, {failures.sum()} total)"
+        )
