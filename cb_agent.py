@@ -83,6 +83,9 @@ class LinUCBAgent(CBAgent):
         self.b.fill(0.0)
         self.theta.fill(0.0)
 
+    def _run_metadata(self):
+        return {**super()._run_metadata(), "alpha": self.alpha}
+
     def select_arm(self, trial, timestep, context):
         estimate = self.theta[trial] @ context
         # x . A_a^-1 x for every arm at once, no Python loop over arms
@@ -131,6 +134,16 @@ class LLMCBAgent(LLMAgent, CBAgent):
     def _system_prompt(self, env):
         names = "\n".join(f"{i + 1}. {name}" for i, name in enumerate(env.arm_names))
         return CB_SYSTEM_PROMPT.format(env.num_arms, names)
+
+    def _run_metadata(self):
+        return {**super()._run_metadata(), "history_window": self.history_window}
+
+    def _history_record(self, trial, index):
+        # the rendered site is kept alongside the history, so merge it back in
+        record = super()._history_record(trial, index)
+        record["context_text"] = self.context_texts[trial][index]
+
+        return record
 
     def _estimate_tokens(self, env):
         # one rendered round, times the rounds shown, at roughly 4 chars per token

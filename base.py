@@ -1,9 +1,22 @@
+import json
 import re
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 CHOICE_PATTERN = re.compile(r"\[choice:\s*(\d+)\s*\]")
+
+RESULTS_DIR = Path("results")
+
+
+def load_history(path):
+    """A saved run as `(metadata, records)` - the header line, then the rounds."""
+    with open(path) as file:
+        lines = [json.loads(line) for line in file if line.strip()]
+
+    return lines[0], lines[1:]
 
 
 class BanditAgent:
@@ -90,6 +103,56 @@ class BanditAgent:
 
         return np.stack(optimal_arm_choices)
 
+    def _run_metadata(self):
+        """The header line of a saved run - everything that is not per-round."""
+        return {
+            "kind": "run",
+            "agent": type(self).__name__,
+            "env": type(self.env).__name__,
+            "num_arms": int(self.env.num_arms),
+            "horizon": int(self.env.horizon),
+            "num_trials": int(self.env.num_trials),
+            "seed": getattr(self.env, "seed", None),
+            "arm_names": getattr(self.env, "arm_names", None),
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        }
+
+    def _history_record(self, trial, index):
+        """One round as a fresh dict; subclasses merge in their own fields."""
+        return dict(self.history[trial][index])
+
+    def save_history(self, path=None):
+        """Write the run to JSONL - a metadata header, then one line per round.
+
+        No `_batched` twin: this saves a finished run, not a timestep.
+        """
+        if path is None:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            name = f"{type(self.env).__name__}_{type(self).__name__}_{stamp}.jsonl"
+            RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+            path = RESULTS_DIR / name
+
+        # regret and the optimal-arm rate stack over trials, so a run that died
+        # partway is ragged and gets its rounds without them
+        regrets = optimals = None
+        full = all(len(entries) == self.env.horizon for entries in self.history)
+        if full and hasattr(self.env, "arm_means"):
+            regrets = np.diff(self.cumulative_regrets(), axis=1, prepend=0.0)
+            optimals = self.optimal_arm_choices()
+
+        with open(path, "w") as file:
+            file.write(json.dumps(self._run_metadata()) + "\n")
+            for trial in range(self.env.num_trials):
+                for index in range(len(self.history[trial])):
+                    record = {"kind": "round", "trial": trial}
+                    record.update(self._history_record(trial, index))
+                    if regrets is not None:
+                        record["regret"] = float(regrets[trial, index])
+                        record["optimal"] = float(optimals[trial, index])
+                    file.write(json.dumps(record) + "\n")
+
+        return path
+
     def summary(self):
         """Print end-of-run stats, each a mean +/- std over trials."""
         # nansum, so a run that died partway still summarises
@@ -161,6 +224,8 @@ class LLMAgent(BanditAgent):
 
         self.seed = seed
         self.rng = np.random.default_rng(seed)
+        # the LLM object does not report the id it was built from, so keep it
+        self.model_name = model
         self.model = LLM(
             model,
             enable_prefix_caching=True,
@@ -206,6 +271,28 @@ class LLMAgent(BanditAgent):
     def _record_response(self, trial):
         # the update signatures differ between MAB and CB, so each agent calls this
         self.history[trial][-1]["raw_response"] = self.last_responses[trial]
+
+    def _run_metadata(self):
+        metadata = super()._run_metadata()
+        params = self.sampling_params
+        metadata.update({
+            "model": self.model_name,
+            "agent_seed": self.seed,
+            "sampling_params": {
+                "temperature": params.temperature,
+                "top_p": params.top_p,
+                "top_k": params.top_k,
+                "max_tokens": params.max_tokens,
+            },
+            "parse_failures": self.parse_failures.tolist(),
+            # kept once here rather than on every round, where it never changes
+            "system_prompt": self._system_prompt(self.env),
+        })
+
+        return metadata
+
+    def _system_prompt(self, env):
+        raise NotImplementedError
 
     def summary(self):
         super().summary()

@@ -10,6 +10,7 @@ class MABEnv(ABC):
         self.horizon = horizon
         self.num_trials = num_trials
 
+        self.seed = seed
         self.rng = np.random.default_rng(seed)
 
         self.arm_means = self._arm_means()

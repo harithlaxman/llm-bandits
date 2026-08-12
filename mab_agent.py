@@ -48,16 +48,17 @@ class LLMMABAgent(LLMAgent):
         super().update(trial, timestep, arm, reward)
         self._record_response(trial)
 
+    def _system_prompt(self, env):
+        return SYSTEM_PROMPT.format(
+            env.num_arms,
+            ", ".join(str(i + 1) for i in range(env.num_arms)),
+            unit=self.unit,
+        )
+
     # shared core
     def _build_prompt(self, trial, timestep):
         # one chat conversation from one trial's per-arm stats; the system
         # message is identical across trials so it is a cached shared prefix
-        system = SYSTEM_PROMPT.format(
-            self.env.num_arms,
-            ", ".join(str(i + 1) for i in range(self.env.num_arms)),
-            unit=self.unit,
-        )
-
         summary = ""
         if timestep > 0:
             summary = SUMMARY_HISTORY_PREAMBLE.format(n=timestep, unit=self.unit)
@@ -77,7 +78,7 @@ class LLMMABAgent(LLMAgent):
             unit=self.unit, choices=f"1 to {self.env.num_arms}"
         )
         return [
-            {"role": "system", "content": system},
+            {"role": "system", "content": self._system_prompt(self.env)},
             {"role": "user", "content": summary + query},
         ]
 
