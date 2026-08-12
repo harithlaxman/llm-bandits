@@ -19,6 +19,18 @@ def load_history(path):
     return lines[0], lines[1:]
 
 
+def _round_floats(value):
+    """Every float in a saved line, to 3 decimals - more precision is noise."""
+    if isinstance(value, float):
+        return round(value, 3)
+    if isinstance(value, dict):
+        return {key: _round_floats(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_round_floats(item) for item in value]
+
+    return value
+
+
 class BanditAgent:
     """Bookkeeping shared by every agent, in matched sequential/`_batched` pairs."""
 
@@ -29,7 +41,7 @@ class BanditAgent:
         self.rewards = np.full((env.num_trials, env.horizon), np.nan)
         self.arm_counts = np.zeros((env.num_trials, env.num_arms))
         self.arm_rewards = np.zeros((env.num_trials, env.num_arms))
-        # one list per trial of {"timestep", "chosen_arm", "reward"} dicts
+        # one list per trial of {"ts", "chosen_arm", "reward"} dicts
         self.history = [[] for _ in range(env.num_trials)]
 
     def reset(self):
@@ -51,7 +63,7 @@ class BanditAgent:
         self.arm_counts[trial, arm] += 1
         self.arm_rewards[trial, arm] += reward
         self.history[trial].append({
-            "timestep": timestep,
+            "ts": timestep,
             "chosen_arm": int(arm),
             "reward": float(reward),
         })
@@ -60,48 +72,35 @@ class BanditAgent:
         for trial, (arm, reward) in enumerate(zip(arms, rewards)):
             self.update(trial, timestep, arm, reward)
 
+    def _chosen_and_optimal(self, trial):
+        """One trial's chosen and best arm mean per round, both shape (rounds,)."""
+        entries = self.history[trial]
+        timesteps = np.array([entry["ts"] for entry in entries], dtype=int)
+        chosen_arms = np.array([entry["chosen_arm"] for entry in entries], dtype=int)
+
+        return (
+            self.env.arm_means[trial, timesteps, chosen_arms],
+            np.max(self.env.arm_means[trial, timesteps, :], axis=1),
+        )
+
+    def regrets(self):
+        """Pseudo-regret per round, shape (num_trials, horizon)."""
+        return np.stack([
+            optimal - chosen
+            for chosen, optimal in map(self._chosen_and_optimal, range(self.env.num_trials))
+        ])
+
     def cumulative_regrets(self):
         """Pseudo-regret per trial, cumulative over time, shape (num_trials, horizon)."""
-        cumulative_regrets = []
-
-        for trial in range(self.env.num_trials):
-            timesteps = np.array([
-                entry["timestep"] for entry in self.history[trial]
-            ], dtype=int)
-            chosen_arms = np.array([
-                entry["chosen_arm"] for entry in self.history[trial]
-            ], dtype=int)
-            chosen_arm_means = self.env.arm_means[trial, timesteps, chosen_arms]
-            optimal_arm_means = np.max(
-                self.env.arm_means[trial, timesteps, :], axis=1
-            )
-            cumulative_regrets.append(
-                np.cumsum(optimal_arm_means - chosen_arm_means)
-            )
-
-        return np.stack(cumulative_regrets)
+        return np.cumsum(self.regrets(), axis=1)
 
     def optimal_arm_choices(self):
         """1.0 where the chosen arm was optimal, shape (num_trials, horizon)."""
-        optimal_arm_choices = []
-
-        for trial in range(self.env.num_trials):
-            timesteps = np.array([
-                entry["timestep"] for entry in self.history[trial]
-            ], dtype=int)
-            chosen_arms = np.array([
-                entry["chosen_arm"] for entry in self.history[trial]
-            ], dtype=int)
-            chosen_arm_means = self.env.arm_means[trial, timesteps, chosen_arms]
-            optimal_arm_means = np.max(
-                self.env.arm_means[trial, timesteps, :], axis=1
-            )
-            # compare means, not indices, so tied optimal arms both count
-            optimal_arm_choices.append(
-                (chosen_arm_means == optimal_arm_means).astype(float)
-            )
-
-        return np.stack(optimal_arm_choices)
+        # compare means, not indices, so tied optimal arms both count
+        return np.stack([
+            (chosen == optimal).astype(float)
+            for chosen, optimal in map(self._chosen_and_optimal, range(self.env.num_trials))
+        ])
 
     def _run_metadata(self):
         """The header line of a saved run - everything that is not per-round."""
@@ -136,20 +135,20 @@ class BanditAgent:
         # partway is ragged and gets its rounds without them
         regrets = optimals = None
         full = all(len(entries) == self.env.horizon for entries in self.history)
-        if full and hasattr(self.env, "arm_means"):
-            regrets = np.diff(self.cumulative_regrets(), axis=1, prepend=0.0)
+        if full and self.env.arm_means is not None:
+            regrets = self.regrets()
             optimals = self.optimal_arm_choices()
 
         with open(path, "w") as file:
-            file.write(json.dumps(self._run_metadata()) + "\n")
+            file.write(json.dumps(_round_floats(self._run_metadata())) + "\n")
             for trial in range(self.env.num_trials):
                 for index in range(len(self.history[trial])):
-                    record = {"kind": "round", "trial": trial}
+                    record = {"trial": trial}
                     record.update(self._history_record(trial, index))
                     if regrets is not None:
                         record["regret"] = float(regrets[trial, index])
                         record["optimal"] = float(optimals[trial, index])
-                    file.write(json.dumps(record) + "\n")
+                    file.write(json.dumps(_round_floats(record)) + "\n")
 
         return path
 
@@ -160,7 +159,7 @@ class BanditAgent:
         print(f"cumulative reward = {rewards.mean():.2f} +/- {rewards.std():.2f}")
 
         # regret and the optimal-arm rate need arm means, which contextual envs lack
-        if not hasattr(self.env, "arm_means"):
+        if self.env.arm_means is None:
             return
 
         regrets = self.cumulative_regrets()[:, -1]
@@ -191,7 +190,7 @@ class BanditAgent:
         steps = np.arange(1, self.env.horizon + 1)
         curves = {"Reward": self.rewards}
         # the optimal-arm rate needs arm means, which contextual envs lack
-        if hasattr(self.env, "arm_means"):
+        if self.env.arm_means is not None:
             curves["Optimal arm"] = self.optimal_arm_choices()
 
         fig, running_ax = plt.subplots(figsize=(5, 4))

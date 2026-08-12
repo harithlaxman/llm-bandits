@@ -5,6 +5,10 @@ from tqdm import tqdm
 
 
 class MABEnv(ABC):
+    # an env whose rewards need different wording overrides this; None takes the
+    # LLM agent's own default
+    system_prompt = None
+
     def __init__(self, num_arms, horizon, num_trials=20, seed=42):
         self.num_arms = num_arms
         self.horizon = horizon
@@ -61,3 +65,36 @@ class MABStationaryEnv(MABEnv):
         return np.broadcast_to(
             means[:, None, :], (self.num_trials, self.horizon, self.num_arms)
         )
+
+
+class MABNonStationaryEnv(MABEnv):
+    """Stationary except at the halfway mark, where the optimal arm shifts by one."""
+
+    # same placeholders as the agent's default, but no promise of a fixed mean;
+    # the change point itself is withheld, so finding it is still the agent's job
+    system_prompt = (
+        "You are a bandit algorithm with {0} {unit}s labeled {1}.\n"
+        "Each {unit} is associated with a Bernoulli distribution with an unknown mean that can change over time; the means for the {unit}s could be different.\n"
+        "When you press one of the {unit}s, you will get a reward that is sampled from the {unit}'s associated distribution. Your goal is to maximize the total reward.\n"
+        "A good strategy to optimize for reward in these situations requires balancing exploration "
+        "and exploitation, and it has to keep watching for change. Recent rewards count for more "
+        "than old ones, so the best {unit} so far may no longer be the best, and any {unit} that "
+        "paid poorly earlier is worth trying again."
+    )
+
+    def _arm_means(self):
+        # same per-trial draw as the stationary env, so the two are comparable
+        first = self.rng.integers(self.num_arms, size=self.num_trials)
+        self.switch = self.horizon // 2
+        # (num_trials, horizon) - the optimal arm at every round
+        self.optimal_arms = np.where(
+            np.arange(self.horizon) < self.switch,
+            first[:, None],
+            ((first + 1) % self.num_arms)[:, None],
+        )
+
+        # a real array, not the stationary env's read-only broadcast view
+        means = np.full((self.num_trials, self.horizon, self.num_arms), 0.4)
+        np.put_along_axis(means, self.optimal_arms[:, :, None], 0.6, axis=2)
+
+        return means

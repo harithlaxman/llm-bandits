@@ -49,7 +49,8 @@ class LLMMABAgent(LLMAgent):
         self._record_response(trial)
 
     def _system_prompt(self, env):
-        return SYSTEM_PROMPT.format(
+        # an env whose rewards move supplies its own wording, with the same placeholders
+        return (env.system_prompt or SYSTEM_PROMPT).format(
             env.num_arms,
             ", ".join(str(i + 1) for i in range(env.num_arms)),
             unit=self.unit,

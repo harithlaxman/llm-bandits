@@ -99,6 +99,12 @@ class CBEnv(ABC):
     drivers differ from the MAB ones only in fetching a context and passing it on.
     """
 
+    # a contextual env without per-arm means leaves this None
+    arm_means = None
+    # an env whose rewards need different wording overrides this; None takes the
+    # LLM agent's own default
+    system_prompt = None
+
     def __init__(self, num_arms, context_dim, horizon, num_trials=20, seed=42):
         self.num_arms = num_arms
         self.context_dim = context_dim
@@ -184,9 +190,16 @@ class ClassificationCBEnv(CBEnv):
             self.rng.choice(len(features), size=horizon, replace=False)
             for _ in range(num_trials)
         ])
-        # the correct arm always pays 1, so the means are one-hot over the label;
+        # (num_trials, horizon) - the paying arm at each round; a subclass can make
+        # it depend on the timestep
+        self.stream_labels = self._stream_labels()
+        # the correct arm always pays 1, so the means are one-hot over that label;
         # base.py reads this for regret, the optimal-arm rate and the plots
-        self.arm_means = np.eye(self.num_arms)[self.labels[self.stream]]
+        self.arm_means = np.eye(self.num_arms)[self.stream_labels]
+
+    def _stream_labels(self):
+        """The paying arm at each (trial, timestep), shape (num_trials, horizon)."""
+        return self.labels[self.stream]
 
     def get_context(self, trial, timestep):
         return self.features[self.stream[trial, timestep]]
@@ -195,10 +208,10 @@ class ClassificationCBEnv(CBEnv):
         return self.features[self.stream[:, timestep]]
 
     def get_reward(self, trial, timestep, arm):
-        return float(arm == self.labels[self.stream[trial, timestep]])
+        return float(arm == self.stream_labels[trial, timestep])
 
     def get_rewards_batched(self, timestep, arms):
-        return (arms == self.labels[self.stream[:, timestep]]).astype(float)
+        return (arms == self.stream_labels[:, timestep]).astype(float)
 
 
 class CovertypeCBEnv(ClassificationCBEnv):
@@ -235,3 +248,37 @@ class CovertypeCBEnv(ClassificationCBEnv):
             self.render_context(context)
             for context in self.get_contexts_batched(timestep)
         ]
+
+
+class NonStationaryCovertypeCBEnv(CovertypeCBEnv):
+    """Covertype with the label map rotated by one halfway through the horizon.
+
+    The contexts and the arm names are untouched, so an agent that has learned the
+    real cover types is wrong on every round after the switch until it relearns.
+    """
+
+    # same placeholders as the agent's default; the paying cover type is no longer
+    # promised to be the true one, and the change point is withheld
+    system_prompt = (
+        "You are a contextual bandit algorithm that names the forest cover type of a site.\n"
+        "Each round you are shown a description of one site, and you choose one of {0} cover types:\n"
+        "{1}\n"
+        "You get a reward of 1 if your choice is the one that pays for that site, and 0 if it is not.\n"
+        "The cover type that pays for a given kind of site can change over time, so what paid "
+        "earlier may stop paying, and a choice that failed earlier is worth trying again.\n"
+        "You are told the reward for your own choice only; you are never told which choice pays.\n"
+        "A good strategy to optimize for reward in these situations requires balancing exploration "
+        "and exploitation. You need to explore to learn which descriptions go with which cover "
+        "types, but you also have to exploit the information that you have to accumulate rewards. "
+        "Recent rounds say more than old ones."
+    )
+
+    def _stream_labels(self):
+        labels = super()._stream_labels()
+        self.switch = self.horizon // 2
+
+        return np.where(
+            np.arange(self.horizon) < self.switch,
+            labels,
+            (labels + 1) % self.num_arms,
+        )

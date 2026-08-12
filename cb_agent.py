@@ -133,7 +133,8 @@ class LLMCBAgent(LLMAgent, CBAgent):
 
     def _system_prompt(self, env):
         names = "\n".join(f"{i + 1}. {name}" for i, name in enumerate(env.arm_names))
-        return CB_SYSTEM_PROMPT.format(env.num_arms, names)
+        # an env whose rewards move supplies its own wording, with the same placeholders
+        return (env.system_prompt or CB_SYSTEM_PROMPT).format(env.num_arms, names)
 
     def _run_metadata(self):
         return {**super()._run_metadata(), "history_window": self.history_window}
