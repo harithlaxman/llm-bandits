@@ -272,7 +272,30 @@ ninja==1.13.0
     #   vllm
 numba==0.65.0
     # via vllm
-numpy==2.4.6
+numpy==2.3.5 ; python_full_version < '3.13'
+    # via
+    #   contourpy
+    #   cuda-core
+    #   flashinfer-python
+    #   humming-kernels
+    #   matplotlib
+    #   mistral-common
+    #   ml-dtypes
+    #   numba
+    #   nvidia-cutlass-dsl-libs-base
+    #   nvidia-cutlass-dsl-libs-core
+    #   nvidia-cutlass-dsl-libs-cu12
+    #   nvidia-cutlass-dsl-libs-cu13
+    #   opencv-python-headless
+    #   pandas
+    #   scikit-learn
+    #   scipy
+    #   tilelang
+    #   torchvision
+    #   transformers
+    #   vllm
+    #   xgrammar
+numpy==2.4.6 ; python_full_version >= '3.13'
     # via
     #   contourpy
     #   cuda-core
@@ -692,11 +715,15 @@ typer==0.27.0
     #   transformers
 typing-extensions==4.16.0
     # via
+    #   aiohttp
+    #   aiosignal
     #   anthropic
+    #   anyio
     #   apache-tvm-ffi
     #   cuda-tile
     #   fastapi
     #   grpcio
+    #   httpx2
     #   huggingface-hub
     #   mcp
     #   mcp-types
@@ -714,7 +741,9 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   pydantic-extra-types
+    #   referencing
     #   rich-toolkit
+    #   starlette
     #   tilelang
     #   torch
     #   typing-inspection
